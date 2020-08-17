@@ -1,0 +1,86 @@
+version: "3.8"
+
+volumes:
+  config:
+  repo:
+
+networks:
+  srht:
+  app:
+    external:
+      name: app
+
+services:
+  # Oneshot configuration setup container
+  conf:
+    build:
+      context: ./service/conf
+      args:
+        - DOMAIN
+    image: srht-conf
+    container_name: srht-conf
+    volumes:
+      - config:/etc/sr.ht
+    networks:
+      - srht
+  # Common database
+  database:
+    image: postgres:alpine
+    container_name: srht-database
+    environment:
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    restart: unless-stopped
+    networks:
+      - srht
+  # Common cache
+  cache:
+    image: redis:alpine
+    container_name: srht-cache
+    restart: unless-stopped
+    networks:
+      - srht
+  # Central authentication and account service for the sr.ht network
+  meta:
+    build:
+      context: ./service/meta
+    image: srht-meta
+    container_name: srht-meta
+    depends_on:
+      - conf
+      - database
+      - cache
+    volumes:
+      - config:/etc/sr.ht
+    restart: unless-stopped
+    networks:
+      - srht
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=app"
+      - "traefik.http.routers.meta-srht.rule=Host(`meta.${DOMAIN}`)"
+      - "traefik.http.routers.meta-srht.entrypoints=http"
+  # Git repository hosting service for the sr.ht network
+  git:
+    build:
+      context: ./service/git
+    image: srht-git
+    container_name: srht-git
+    depends_on:
+      - meta
+    volumes:
+      - config:/etc/sr.ht
+      - repo:/var/lib/git
+    restart: unless-stopped
+    networks:
+      - srht
+      - app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=app"
+      - "traefik.http.routers.git-srht.rule=Host(`git.${DOMAIN}`)"
+      - "traefik.http.routers.git-srht.entrypoints=http"
+      - "traefik.tcp.routers.git-srht-ssh.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.git-srht-ssh.entrypoints=ssh"
+      - "traefik.tcp.routers.git-srht-ssh.service=git-srht-ssh-svc"
+      - "traefik.tcp.services.git-srht-ssh-svc.loadbalancer.server.port=22"
